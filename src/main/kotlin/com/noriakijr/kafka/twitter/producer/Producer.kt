@@ -8,7 +8,11 @@ import com.twitter.hbc.core.endpoint.StatusesFilterEndpoint
 import com.twitter.hbc.core.event.Event
 import com.twitter.hbc.core.processor.StringDelimitedProcessor
 import com.twitter.hbc.httpclient.auth.OAuth1
-import java.io.File
+import org.apache.kafka.clients.producer.KafkaProducer
+import org.apache.kafka.clients.producer.ProducerConfig
+import org.apache.kafka.clients.producer.ProducerRecord
+import org.apache.kafka.common.serialization.StringSerializer
+import org.slf4j.LoggerFactory
 import java.io.FileInputStream
 import java.util.*
 import java.util.concurrent.LinkedBlockingQueue
@@ -17,6 +21,8 @@ import java.util.concurrent.LinkedBlockingQueue
 class Producer
 
 fun main(args: Array<String>) {
+    val logger = LoggerFactory.getLogger(Producer::class.java)
+
     /** Set up your blocking queues: Be sure to size these properly based on expected TPS of your stream */
     val msgQueue = LinkedBlockingQueue<String>(100000)
     val eventQueue = LinkedBlockingQueue<Event>(1000)
@@ -55,7 +61,38 @@ fun main(args: Array<String>) {
     // Attempts to establish a connection.
     hosebirdClient.connect()
 
+    // create producer properties
+    val kafkaProperties = Properties()
+    kafkaProperties[ProducerConfig.BOOTSTRAP_SERVERS_CONFIG] = "127.0.0.1:9092"
+    kafkaProperties[ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG] = StringSerializer::class.java.name
+    kafkaProperties[ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG] = StringSerializer::class.java.name
+
+    // create the producer
+    val producer = KafkaProducer<String, String>(kafkaProperties)
+
     while (!hosebirdClient.isDone) {
-        println(msgQueue.take())
+        // create a producer record
+        val record = ProducerRecord<String, String>("first_twitter_topic", msgQueue.take())
+
+        // send data - asynchronous
+        producer.send(record) { metadata, exception ->
+            exception
+                ?.let { logger.error("Error while producing", it) }
+                .run {
+                    logger.info(
+                        "Received message \n" +
+                                "Topic: ${metadata.topic()}\n" +
+                                "Partition: ${metadata.partition()}\n" +
+                                "Offset: ${metadata.offset()}\n" +
+                                "Timestamp: ${metadata.timestamp()}"
+                    )
+                }
+        }
+
+        // flush data
+        producer.flush()
     }
+
+    // flush and close producer
+    producer.close()
 }
